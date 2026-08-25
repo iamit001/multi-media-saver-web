@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multimediasaver
+  namespace: multimediasaver
+  labels:
+    app: multimediasaver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: multimediasaver
+  template:
+    metadata:
+      labels:
+        app: multimediasaver
+    spec:
+      serviceAccountName: dockerhub-service-account
+      containers:
+      - name: multimediasaver
+        image: imitso/multimediasaver:v1.0.1
+        ports:
+        - containerPort: 3001
