@@ -1,10 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: my-app-service
+  name: multimediasaver-service
+  namespace: multimediasaver
+  labels:
+    app: multimediasaver
 spec:
   selector:
-    app: my-app
+    app: multimediasaver
   ports:
     - protocol: TCP
       port: 80
