@@ -18,6 +18,6 @@ spec:
       serviceAccountName: dockerhub-service-account
       containers:
       - name: multimediasaver
-        image: imitso/multimediasaver:v1.0.1
+        image: imitso/multimediasaver:latest
         ports:
         - containerPort: 3001
