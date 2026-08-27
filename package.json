@@ -9,10 +9,6 @@
     "server": "nodemon server/server.js",
     "dev": "concurrently \"npm run server\" \"npm run client\""
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://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@github.com/iamit001/multimediasaver.git"
-  },
   "keywords": [],
   "author": "",
   "license": "ISC",
