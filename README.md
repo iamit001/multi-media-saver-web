@@ -35,6 +35,8 @@
 <Argocd cluster>
 
 
+> Discord Pipeline Update Notification
+
 
 
 
