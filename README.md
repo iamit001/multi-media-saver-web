@@ -36,10 +36,11 @@ How pipeline will look after deployment:
 <Jenkins CD Screenshot>
 
 - ArgoCD application for deployment on K8s
-<Argocd cluster Screenshot>
+
+  ![ArgoCD Panel](./assets/argocd-deployment.png)
 
 Discord Pipeline Update Notification
-<Discord notification screenshot>
+![Discord Notification](./assets/discord-notification.png)
 
 
 # 🏗️ Project Implementation
@@ -1152,7 +1153,373 @@ Argo CD continuously monitors the GitOps repository and deploys the updated Kube
 > ⚠️ **Important:** Making a Kubernetes application publicly accessible requires more than DNS configuration. The cluster must have a reachable public endpoint, the required firewall/security-group ports must be open (typically `80` and `443`), and the Ingress Controller must be correctly configured to receive external traffic.
 
 
+### 📊 Prometheus & Grafana Monitoring Setup
+
+This setup uses Prometheus to collect metrics from a Kubernetes cluster and Grafana to visualize those metrics.
+
+#### 📰 The Dashboard
+![Grafana Dashboard](./assets/Grafana-k8s-metrics.png)
 
 
+## Prerequisites
 
+Make sure the following tools are installed:
 
+- Docker
+- kubectl
+- Helm
+- Grafana
+
+Verify the installations:
+
+```bash
+docker --version
+kubectl version --client
+helm version
+```
+
+## 1. Add Prometheus Community Helm Repository
+
+Add the Prometheus Community Helm repository:
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+```
+
+Update the repository:
+
+```bash
+helm repo update
+```
+
+Verify that the `kube-prometheus-stack` chart is available:
+
+```bash
+helm search repo prometheus-community/kube-prometheus-stack
+```
+
+## 2. Create Monitoring Namespace
+
+Create a dedicated namespace for monitoring:
+
+```bash
+kubectl create namespace monitoring
+```
+
+Verify:
+
+```bash
+kubectl get namespaces
+```
+
+## 3. Install kube-prometheus-stack
+
+Install the Prometheus monitoring stack using Helm.
+
+Since Grafana is already running separately, disable the Grafana component included in the Helm chart:
+
+```bash
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set grafana.enabled=false
+```
+
+The `kube-prometheus-stack` provides:
+
+- Prometheus
+- Prometheus Operator
+- kube-state-metrics
+- Node Exporter
+- Alertmanager
+- Kubernetes monitoring rules
+
+## 4. Verify Prometheus Installation
+
+Check the monitoring pods:
+
+```bash
+kubectl get pods -n monitoring
+```
+
+Check the monitoring services:
+
+```bash
+kubectl get svc -n monitoring
+```
+
+The Prometheus service should be available:
+
+```text
+monitoring-kube-prometheus-prometheus
+```
+
+## 5. Verify Prometheus Endpoint
+
+Check the Prometheus service endpoint:
+
+```bash
+kubectl get endpoints -n monitoring \
+  monitoring-kube-prometheus-prometheus
+```
+
+Example output:
+
+```text
+NAME                                      ENDPOINTS
+monitoring-kube-prometheus-prometheus     10.244.0.59:9090
+```
+
+The endpoint confirms that the Prometheus service is connected to the Prometheus pod.
+
+> **Note:** In newer Kubernetes versions, you may see a warning that the `v1 Endpoints` API is deprecated. Kubernetes recommends using `EndpointSlice`. This warning does not indicate a Prometheus failure.
+
+## 7. Access Prometheus Locally
+
+For local testing, use `kubectl port-forward`.
+
+```bash
+kubectl port-forward \
+  -n monitoring \
+  svc/monitoring-kube-prometheus-prometheus \
+  9000:9090
+```
+
+Prometheus can then be accessed at:
+
+```text
+http://localhost:9090
+```
+
+Port mapping:
+
+```text
+localhost:9000  --->  Prometheus Service:9090
+```
+
+> **Note:** Keep the port-forward terminal running while using Prometheus.
+
+## 8. Verify Prometheus Metrics
+
+Open:
+
+```text
+http://localhost:9000
+```
+Go to the Prometheus query page and run the following PromQL queries.
+
+### Check Prometheus Targets
+
+```promql
+up
+```
+
+### Check Kubernetes Pods
+
+```promql
+kube_pod_info
+```
+
+### Check Kubernetes Nodes
+
+```promql
+kube_node_info
+```
+
+### Check Container Memory
+
+```promql
+container_memory_working_set_bytes
+```
+
+If these queries return data, Prometheus is successfully collecting Kubernetes metrics.
+
+## 10. Add Prometheus Data Source to Grafana
+
+In Grafana, go to:
+
+**Connections → Data Sources → Add Data Source → Prometheus**
+
+Set the Prometheus URL to an address reachable from the Grafana machine.
+
+Example:
+
+```text
+http://<k8s-server-ip>:9000
+```
+
+Replace `192.168.1.100` with the IP address of the machine running K8s with prometheus installed.
+
+Click:
+
+**Save & Test**
+
+Grafana should successfully connect to Prometheus.
+
+### Important
+
+Do not use:
+
+```text
+http://localhost:9091
+```
+
+when Grafana is running on another machine.
+
+Inside a Docker container, `localhost` refers to the Grafana container itself, not the machine running Kind.
+
+## 11. Test Prometheus Data in Grafana
+
+Open:
+
+**Explore**
+
+Select the Prometheus data source.
+
+Run:
+
+```promql
+up
+```
+
+Then:
+
+```promql
+kube_pod_info
+```
+
+And:
+
+```promql
+kube_node_info
+```
+
+If these queries return data, Grafana is successfully receiving Kubernetes metrics from Prometheus.
+
+## 12. Import a Pre-Built Kubernetes Dashboard
+
+Instead of manually creating dashboards and visualizations, use a pre-built Kubernetes dashboard.
+
+Recommended dashboard:
+
+**Kubernetes / Views / Global**
+
+Dashboard ID:
+
+```text
+15757
+```
+
+In Grafana:
+
+**Dashboards → New → Import**
+
+Enter:
+
+```text
+15757
+```
+
+Click:
+
+**Load**
+
+Select the Prometheus data source configured earlier.
+
+Then click:
+
+**Import**
+
+The dashboard provides Kubernetes visualizations such as:
+
+- Cluster CPU usage
+- Cluster memory usage
+- Nodes
+- Pods
+- Namespaces
+- Workloads
+- Container metrics
+- Resource utilization
+
+## 13. Useful Kubernetes Dashboards
+
+| Dashboard | ID | Purpose |
+|---|---:|---|
+| Kubernetes / Views / Global | `15757` | Overall cluster monitoring |
+| Kubernetes / Views / Namespaces | `15758` | Namespace monitoring |
+| Kubernetes / Views / Nodes | `15759` | Node monitoring |
+| Kubernetes / Views / Pods | `15760` | Pod monitoring |
+
+Import dashboards using:
+
+**Dashboards → New → Import**
+
+Enter the dashboard ID and select the Prometheus data source.
+
+## 16. Useful Kubernetes Commands
+
+Check all monitoring resources:
+
+```bash
+kubectl get all -n monitoring
+```
+
+Check Prometheus:
+
+```bash
+kubectl get prometheus -n monitoring
+```
+
+Check monitoring services:
+
+```bash
+kubectl get svc -n monitoring
+```
+
+Check ServiceMonitors:
+
+```bash
+kubectl get servicemonitor -n monitoring
+```
+
+Check PodMonitors:
+
+```bash
+kubectl get podmonitor -n monitoring
+```
+
+Check Prometheus configuration:
+
+```bash
+kubectl get prometheus -n monitoring -o yaml
+```
+
+## Result
+
+The completed monitoring stack provides:
+
+- Kubernetes cluster monitoring
+- Node monitoring
+- Pod monitoring
+- Container CPU and memory metrics
+- Namespace monitoring
+- Workload monitoring
+- Kubernetes resource utilization
+- Prometheus metrics
+- Grafana visualization
+- Pre-built Kubernetes dashboards
+
+The overall monitoring pipeline is:
+
+```text
+Kind
+  ↓
+kube-prometheus-stack
+  ↓
+Prometheus
+  ↓
+Grafana Prometheus Data Source
+  ↓
+Pre-built Kubernetes Dashboard
+  ↓
+Kubernetes Monitoring Visualizations
+```
