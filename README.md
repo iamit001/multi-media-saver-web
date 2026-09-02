@@ -466,6 +466,691 @@ You can also retrieve a specific field:
 vault kv get -field=username secret/<token>
 ```
 
+## 🔐 Using HashiCorp Vault Secrets for Kubernetes Image Pull Authentication
+
+To securely pull private Docker images into the Kubernetes cluster, Docker registry credentials are stored in **HashiCorp Vault** instead of being hardcoded in Kubernetes manifests.
+
+The credentials are retrieved using a **Custom Resource Definition (CRD)** and **External Secrets Operator**, which creates a Kubernetes Secret containing the Docker registry credentials in `.dockerconfigjson` format.
+
+The generated Secret is then associated with a **Kubernetes ServiceAccount** using `imagePullSecrets`.
+
+This allows every Pod that uses the ServiceAccount to authenticate with the private Docker registry, regardless of which Kubernetes node the Pod is scheduled on.
+
+### 🔄 Secret Management Architecture
+
+```text
+                         HashiCorp Vault
+                               |
+                               | Docker Credentials
+                               | username / password
+                               v
+                    ┌──────────────────────┐
+                    │   Vault CRD /        │
+                    │   SecretStore        │
+                    │                      │
+                    │ Connects to Vault    │
+                    └──────────┬───────────┘
+                               |
+                               | Retrieve Secret
+                               v
+                    ┌──────────────────────┐
+                    │ External Secrets     │
+                    │ Operator             │
+                    │                      │
+                    │ ExternalSecret CRD   │
+                    └──────────┬───────────┘
+                               |
+                               | Creates / Updates
+                               v
+                    ┌──────────────────────┐
+                    │ Kubernetes Secret    │
+                    │                      │
+                    │ .dockerconfigjson    │
+                    └──────────┬───────────┘
+                               |
+                               | imagePullSecrets
+                               v
+                    ┌──────────────────────┐
+                    │ Kubernetes           │
+                    │ ServiceAccount       │
+                    └──────────┬───────────┘
+                               |
+                               | Used by Pods
+                               v
+              ┌─────────────────────────────────┐
+              │          Kubernetes Cluster     │
+              │                                 │
+              │  Node 1        Node 2       Node 3
+              │    |              |             |
+              │   Pod            Pod           Pod
+              │    |              |             |
+              │    +--------------+-------------+
+              │                   |
+              │                   v
+              │          Private Docker Registry
+              └─────────────────────────────────┘
+```
+
+## 1. Store Docker Credentials in HashiCorp Vault
+
+Docker registry credentials are first stored securely in HashiCorp Vault.
+
+For example:
+
+```bash
+vault kv put secret/<desirable-name> \
+  username="<DOCKER_USERNAME>" \
+  password="<DOCKER_PASSWORD>"
+```
+Verify the stored secret:
+
+```bash
+vault kv get secret/docker
+```
+
+The Vault secret is structured as:
+
+```text
+secret/<desirable-name>
+├── username
+└── password
+```
+
+## 2. Create a Custom Resource to Access Vault
+
+The Kubernetes cluster needs a way to communicate with HashiCorp Vault.
+
+**External Secrets Operator** provides the required Kubernetes Custom Resource Definitions (CRDs) for connecting Kubernetes to external secret providers such as Vault.
+
+A `SecretStore` defines the connection between Kubernetes and the Vault server.
+
+Example:
+
+[Follow secret-store.yaml](./kubernetes/secret-store.yaml)
+
+Apply the manifest:
+
+```bash
+kubectl apply -f secret-store.yaml
+```
+
+Verify:
+
+```bash
+kubectl get secretstore
+```
+
+Check the status:
+
+```bash
+kubectl describe secretstore vault-secret-store
+```
+
+The `SecretStore` acts as the configuration required by External Secrets Operator to access the Vault server.
+
+
+## 3. Create the ExternalSecret Resource
+
+The `ExternalSecret` resource defines which secret should be retrieved from Vault and how it should be converted into a Kubernetes Secret.
+
+Example:
+
+[Follow external-secret-dockerhub-token.yaml](./kubernetes/external-secret-dockerhub-token.yaml)
+
+Apply the manifest:
+
+```bash
+kubectl apply -f external-secret.yaml
+```
+
+Verify:
+
+```bash
+kubectl get externalsecret
+```
+
+Check the ExternalSecret:
+
+```bash
+kubectl describe externalsecret docker-registry-secret
+```
+
+After successful synchronization, External Secrets Operator creates the Kubernetes Secret:
+
+```text
+docker-registry-secret
+```
+
+with the following type:
+
+```text
+kubernetes.io/dockerconfigjson
+```
+
+## 4. Verify the Generated Docker Registry Secret
+
+Check the Kubernetes Secret:
+
+```bash
+kubectl get secret docker-registry-secret
+```
+
+Verify the Secret type:
+
+```bash
+kubectl get secret docker-registry-secret \
+  -o jsonpath='{.type}'
+```
+
+Expected output:
+
+```text
+kubernetes.io/dockerconfigjson
+```
+
+The Secret contains the Docker registry configuration under:
+
+```text
+.dockerconfigjson
+```
+
+The credentials are stored by Kubernetes in encoded form and are not exposed directly in the Deployment manifest.
+
+
+
+## 5. Create a Kubernetes ServiceAccount
+
+Instead of adding `imagePullSecrets` individually to every Pod, the Docker registry Secret can be associated with a Kubernetes ServiceAccount.
+
+Create a ServiceAccount:
+
+[Follow service-account.yaml] (./kubernetes/service-account.yaml)
+
+Apply it:
+
+```bash
+kubectl apply -f service-account.yaml
+```
+
+Verify:
+
+```bash
+kubectl get serviceaccount multimediasaver-sa
+```
+
+Inspect the ServiceAccount:
+
+```bash
+kubectl describe service-account multimediasaver-sa
+```
+
+The ServiceAccount now references:
+
+```text
+docker-registry-secret
+```
+
+as an image pull secret.
+
+
+## 6. Use the ServiceAccount in the Deployment
+
+The application Deployment can now reference the ServiceAccount.
+
+Example:
+
+```yaml
+
+    spec:
+      serviceAccountName: multimediasaver-sa
+
+```
+
+Notice that the Deployment does **not** need to directly define:
+
+```yaml
+imagePullSecrets:
+  - name: docker-registry-secret
+```
+
+because the ServiceAccount already contains the image pull secret.
+
+
+## 7. How the ServiceAccount Works Across Kubernetes Nodes
+
+The ServiceAccount is associated with the Pod, not with a specific Kubernetes node.
+
+If a Pod using `multimediasaver-sa` is scheduled on **Node 1**, **Node 2**, or **Node 3**, Kubernetes can use the associated image pull secret when pulling the private container image.
+
+> **Important:** The Secret is not copied to every node. Kubernetes uses the Secret when a Pod requiring it is scheduled and its image needs to be pulled.
+
+
+
+## 🌐 Kubernetes Ingress
+
+Kubernetes **Ingress** is used to expose the `MultimediaSaver-Web` application outside the Kubernetes cluster and make it accessible through a web browser.
+
+Instead of exposing the application directly using a `NodePort` or `LoadBalancer`, Ingress provides an HTTP/HTTPS entry point and routes incoming traffic to the Kubernetes Service.
+
+### 1. Install an Ingress Controller
+
+An Ingress resource by itself does not handle traffic. An **Ingress Controller** must be running in the Kubernetes cluster.
+
+For this project, **NGINX Ingress Controller** can be used.
+
+For a development/lab environment, install the NGINX Ingress Controller using the official Kubernetes manifest:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+```
+
+Verify the Ingress Controller:
+
+```bash
+kubectl get pods -n ingress-nginx
+```
+
+Check the service:
+
+```bash
+kubectl get svc -n ingress-nginx
+```
+
+The Ingress Controller should eventually reach the `Running` state.
+
+> ⚠️ The installation method may vary depending on your Kubernetes environment. Cloud-managed clusters, Minikube, Kind, and bare-metal Kubernetes may require different networking or LoadBalancer configuration.
+
+---
+
+### 2. Create the Kubernetes Service
+
+Before creating the Ingress resource, the application should have a Kubernetes Service that exposes the application Pods internally.
+[Follow service.yaml](./kubernetes/service.yaml)
+
+
+Apply the Service:
+
+```bash
+kubectl apply -f service.yaml
+```
+
+Verify:
+
+```bash
+kubectl get svc multimediasaver-web
+```
+
+Expected result:
+
+```text
+NAME                 TYPE        CLUSTER-IP      PORT(S)
+multimediasaver-web  ClusterIP   10.x.x.x        80/TCP
+```
+
+The Service forwards traffic from port `80` to the application's container port `3001`.
+
+---
+
+### 3. Create the Ingress Resource
+
+Create an Ingress manifest to route browser traffic to the `MultimediaSaver-Web` Service.
+
+[Follow ingress.yaml](./kubernetes/ingress.yaml)
+
+Apply the Ingress:
+
+```bash
+kubectl apply -f ingress.yaml
+```
+
+Verify:
+
+```bash
+kubectl get ingress
+```
+
+For more details:
+
+```bash
+kubectl describe ingress multimediasaver-web
+```
+
+
+### 5. Access the Application from a Browser
+
+Once the Ingress Controller, Service, and Ingress resource are configured, open the following URL in your browser:
+
+```text
+http://<>SERVER_IP>
+```
+
+### 6. Verify the Complete Deployment
+
+Check all Kubernetes resources:
+
+```bash
+kubectl get pods
+kubectl get svc
+kubectl get ingress
+```
+
+You can also check the complete application resources:
+
+```bash
+kubectl get all
+```
+
+Check Ingress Controller logs if the application is not accessible:
+
+```bash
+kubectl logs -n ingress-nginx \
+  -l app.kubernetes.io/component=controller
+```
+### 🚀 Argo CD Deployment
+
+The Kubernetes resources are not manually deployed using `kubectl apply` in the final GitOps workflow.
+
+The manifests are committed to the GitOps repository:
+```text
+GitOps Repository
+│
+├── deployment.yaml
+├── service.yaml
+├── serviceaccount.yaml
+└── ingress.yaml
+```
+Argo CD continuously monitors the GitOps repository and deploys these resources to the Kubernetes cluster.
+
+This follows the GitOps deployment model, where Git acts as the source of truth for the Kubernetes application's desired state.
+
+
+## 🌐 Mapping a Domain Name to the Kubernetes Cluster
+
+To make `MultimediaSaver-Web` accessible from the internet using a custom domain name, the domain must be mapped to the **public IP address of the Kubernetes Ingress Controller**.
+
+The overall flow is:
+
+```text
+                         🌐 Internet
+                             |
+                             | https://multimediasaver.example.com
+                             v
+                       ┌─────────────┐
+                       │     DNS     │
+                       │             │
+                       │ Domain Name │
+                       └──────┬──────┘
+                              |
+                              | Resolves to
+                              | Public IP
+                              v
+                    ┌────────────────────┐
+                    │ Public IP /         │
+                    │ Load Balancer      │
+                    └─────────┬──────────┘
+                              |
+                              v
+                    ┌────────────────────┐
+                    │ NGINX Ingress      │
+                    │ Controller         │
+                    └─────────┬──────────┘
+                              |
+                              v
+                    ┌────────────────────┐
+                    │ Kubernetes Service │
+                    └─────────┬──────────┘
+                              |
+                              v
+                    ┌────────────────────┐
+                    │ Application Pods   │
+                    │                    │
+                    │ MultimediaSaver-Web│
+                    └────────────────────┘
+```
+
+### 1. Get the Public IP Address of the Kubernetes Ingress
+
+The domain needs to point to the public endpoint through which the Ingress Controller receives internet traffic.
+
+Check the Ingress Controller Service:
+
+```bash
+kubectl get svc -n ingress-nginx
+```
+
+For a cloud-based Kubernetes cluster, you may see:
+
+```text
+NAME                       TYPE           EXTERNAL-IP
+ingress-nginx-controller   LoadBalancer   203.0.113.10
+```
+
+In this example:
+
+```text
+203.0.113.10
+```
+is the public IP address that receives external traffic.
+
+> 💡 The exact setup depends on your Kubernetes environment. A cloud-managed Kubernetes cluster may automatically provision a Load Balancer, while a self-managed or bare-metal cluster may require an external load balancer, public IP, router/NAT configuration, or another networking solution.
+
+---
+
+### 2. Create a DNS Record
+
+Go to your domain provider's DNS management console and create an `A` record.
+
+For example:
+
+```text
+Type:   A
+Name:   multimediasaver
+Value:  203.0.113.10
+TTL:    300
+```
+
+This creates:
+
+```text
+example.com
+        |
+        v
+203.0.113.10
+```
+
+If you want to use the root domain:
+
+```text
+example.com
+```
+
+you would configure the appropriate `A` record for the root/apex domain according to your DNS provider.
+
+### 3. Configure the Domain in the Kubernetes Ingress
+
+The hostname in the Kubernetes Ingress must match the domain configured in DNS.
+
+Example:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multimediasaver-web
+  namespace: default
+
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multimediasaver-web
+                port:
+                  number: 80
+```
+
+Apply the manifest:
+
+```bash
+kubectl apply -f ingress.yaml
+```
+
+Verify:
+
+```bash
+kubectl get ingress
+```
+
+You should see the configured hostname:
+
+```text
+NAME                 HOSTS
+multimediasaver-web  example.com
+```
+
+### 4. Verify DNS Resolution
+
+From your local system, verify that the domain resolves to the correct public IP:
+
+```bash
+nslookup example.com
+```
+
+or:
+
+```bash
+dig example.com
+```
+
+The result should contain the public IP of the Ingress endpoint:
+
+```text
+example.com
+        |
+        v
+203.0.113.10
+```
+
+You can also test the endpoint:
+
+```bash
+curl -I http://example.com
+```
+
+### 5. Configure HTTPS
+
+For production access, the application should be served over **HTTPS** rather than plain HTTP.
+
+A common Kubernetes approach is to use **cert-manager** with a certificate authority such as Let's Encrypt.
+
+The HTTPS flow becomes:
+
+```text
+Browser
+   |
+   | HTTPS
+   v
+https://example.com
+   |
+   v
+DNS
+   |
+   v
+Public IP
+   |
+   v
+NGINX Ingress Controller
+   |
+   | TLS Termination
+   v
+Kubernetes Service
+   |
+   v
+MultimediaSaver-Web Pods
+```
+
+An example Ingress with TLS configuration:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multimediasaver-web
+  namespace: default
+
+spec:
+  ingressClassName: nginx
+
+  tls:
+    - hosts:
+        - multimediasaver.example.com
+      secretName: multimediasaver-tls
+
+  rules:
+    - host: multimediasaver.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multimediasaver-web
+                port:
+                  number: 80
+```
+
+The TLS Secret:
+
+```text
+multimediasaver-tls
+```
+
+contains the certificate and private key used by the Ingress Controller.
+
+### 🚀 GitOps Deployment with Argo CD
+
+As part of this project's GitOps workflow, the Ingress configuration is stored in the GitOps repository along with the other Kubernetes manifests.
+
+```text
+GitOps Repository
+│
+├── deployment.yaml
+├── service.yaml
+├── serviceaccount.yaml
+└── ingress.yaml
+        |
+        v
+     Argo CD
+        |
+        | Sync
+        v
+Kubernetes Cluster
+        |
+        +── Deployment
+        +── Service
+        +── ServiceAccount
+        +── Ingress
+        |
+        v
+NGINX Ingress Controller
+        |
+        v
+Public Internet
+        |
+        v
+multimediasaver.example.com
+```
+
+Argo CD continuously monitors the GitOps repository and deploys the updated Kubernetes manifests to the cluster. This keeps the Kubernetes cluster synchronized with the desired state defined in Git.
+
+> ⚠️ **Important:** Making a Kubernetes application publicly accessible requires more than DNS configuration. The cluster must have a reachable public endpoint, the required firewall/security-group ports must be open (typically `80` and `443`), and the Ingress Controller must be correctly configured to receive external traffic.
+
 
 
 
