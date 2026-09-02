@@ -29,17 +29,17 @@ The following tools and technologies are used to build, secure, containerize, an
 
 
 How pipeline will look after deployment:
-- CI pipeline to build and push
-<Jenkins CI Screenshot>
 
-- CD pipeline to update application version
-<Jenkins CD Screenshot>
+#### CI pipeline to build and push
+![ArgoCD Panel](./assets/multimediasaver-ci-pipeline.png)
 
-- ArgoCD application for deployment on K8s
+#### CD pipeline to update application version
+![ArgoCD Panel](./assets/multimediasaver-cd-pipeline.png)
 
-  ![ArgoCD Panel](./assets/argocd-deployment.png)
+#### ArgoCD application for deployment on K8s
+![ArgoCD Panel](./assets/argocd-deployment.png)
 
-Discord Pipeline Update Notification
+#### Discord Pipeline Update Notification
 ![Discord Notification](./assets/discord-notification.png)
 
 
